@@ -1,0 +1,32 @@
+# docker run -it -d --name test1 -v ~/Desktop/harris/deepsignnet_v1:/tf/notebooks -p 8081:8888 tensorflow/tensorflow:1.14.0-gpu-py3-jupyter
+version: '3.8'
+
+services:
+  slt:
+    build: ./slt
+    command: python manage.py runserver 0.0.0.0:8888
+    container_name: slt
+    restart: unless-stopped    
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all     
+    volumes:
+      - ./slt:/usr/src/slt/
+    ports:
+      - 8081:8888
+      - 8082:8889
+  swag:
+    image: ghcr.io/linuxserver/swag
+    container_name: swags
+    environment:
+      - URL=deepsignnet.test
+      - VALIDATION=http
+    volumes:
+      - /config:/config
+    ports:
+      - 443:443
+      - 80:80 #optional
+    restart: unless-stopped
+    depends_on: 
+      - slt
