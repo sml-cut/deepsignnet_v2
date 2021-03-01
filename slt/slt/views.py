@@ -22,10 +22,13 @@ import gzip
 # for i3d feature extraction
 import torch
 import torch.nn as nn
-from pytorch_i3d import InceptionI3d
+from models.pytorch_i3d import InceptionI3d
 
 # for text bpemb decoding
 from bpemb import BPEmb
+
+# Sign Langauge Translation model
+from signjoey.prediction import test
 
 # Data preparation hyperparameters
 window = 8
@@ -57,7 +60,7 @@ def rest_video_upload(request):
 
         # Load model
         i3d = InceptionI3d(2000, in_channels=3)
-        i3d.load_state_dict(torch.load("/usr/src/slt/slt/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt"))
+        i3d.load_state_dict(torch.load("/usr/src/slt/slt/models/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt"))
         i3d.cuda()
         i3d = nn.DataParallel(i3d)
         i3d.eval()
@@ -103,53 +106,37 @@ def rest_video_upload(request):
                 "gloss": "random",
                 "text": "random",
                 "sign": batch_processed_images.cpu()}
-        with gzip.open("/usr/src/slt/slt/video/inference.i3d", 'wb') as handle:
+        with gzip.open("/usr/src/slt/slt/data/inference.i3d", 'wb') as handle:
             pickle.dump([data], handle, protocol=pickle.HIGHEST_PROTOCOL)
         os.remove("/usr/src/slt" + video_url)
 
         # Track processing time
         t_pre_processed = time.time()
 
-
-        # # Run inference
-        # #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-        # #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        # #nmt_parser = argparse.ArgumentParser()
-        # #nmt.add_arguments(nmt_parser)
-        # #FLAGS, unparsed = nmt_parser.parse_known_args()
-        # #default_hparams = nmt.create_hparams(FLAGS)
-        # #train_fn = train.train
-        # #inference_fn = inference.inference
-        # #nmt.run_main(FLAGS, default_hparams, train_fn, inference_fn)
-        # time.sleep(1)
-        #
-        # # Read result
-        # with open('/usr/src/slt/slt/video/predictions.de') as f:
-        #     first_line = f.readline()
+        # Perform sign language translation
+        test(cfg_file="/usr/src/slt/slt/models/sign_1_1_8_2.yaml",
+             ckpt="/usr/src/slt/slt/models/s2t_lwta_1_1_8_2_meleti_ab_bpe_25000/best.ckpt",
+             output_path="/usr/src/slt/slt/results/")
+        # Read result
+        with open('/usr/src/slt/slt/results/.BW_01.A_1.test.txt', encoding="utf-8") as f:
+            first_line = f.readline()
+        first_line = first_line.split("|")[1].replace(" ", "").replace("▁", " ")[1:]
+        print(first_line)
 
         t_inferred = time.time()
 
         pre_process_duration = round(t_pre_processed - t_start, 2)
         inference_duration = round(t_inferred - t_pre_processed, 2)
 
-
         return JsonResponse({
             "video_stored_at": video_url,
             "request_details": {"received_at": received_at,
                                 "split_duration": pre_process_duration,
                                 "inference_duration": inference_duration,
-                                "other": "request_details"},
-            "sign_language_translation": "first_line",
-        })
-        # return JsonResponse({
-        #     "video_stored_at": video_url,
-        #     "request_details": {"received_at": received_at,
-        #                         "split_duration": split_duration,
-        #                         "inference_duration": inference_duration,
-        #                         "frames": frames,
-        #                         "other": request_details},
-        #     "sign_language_translation": first_line,
-        # })
+                                "other": request_details},
+            "sign_language_translation": first_line,
+        }, json_dumps_params={'ensure_ascii': False})
+
     return JsonResponse({'API_type': 'GET'})
 
 
