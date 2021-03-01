@@ -16,22 +16,28 @@ from datetime import datetime
 
 import numpy as np
 import cv2
+import pickle
+import gzip
 
+# for i3d feature extraction
+import torch
+import torch.nn as nn
+from pytorch_i3d import InceptionI3d
 
+# for text bpemb decoding
+from bpemb import BPEmb
+
+# Data preparation hyperparameters
+window = 8
+stride = 2
+size = (224, 224)
+
+# Translation Greek Decoding
+vocab_size = 25000
+bpemb_gr = BPEmb(lang='el', vs=vocab_size)
 
 @csrf_exempt
 def web_video_upload(request):
-    if request.method == "POST" and request.FILES["video_file"]:
-        test=2
-        video_file = request.FILES["video_file"]
-        fs = FileSystemStorage()
-        filename = fs.save('received/' + video_file.name, video_file)
-        video_url = fs.url(filename)
-        print(video_url)
-        return render(request, "upload.html", {
-            "video_url": video_url,
-            "video_translation": "This is a dummy video translation"
-        })
     return render(request, "upload.html")
     
 
@@ -43,48 +49,107 @@ def rest_video_upload(request):
         fs = FileSystemStorage()
         filename = fs.save('received/' + video_file.name, video_file)
         video_url = fs.url(filename)
-        print(video_url)
-        with open('/usr/src/slt/slt/video/video_location.sign', 'w') as out_file:
-            # out_file.write("/usr/src/slt" + video_url[:-4] + "/")
-            out_file.write("/usr/src/slt/slt/video/april/")
+        print("/usr/src/slt/slt" + video_url)
 
+        # Track processing time
         received_at = str(datetime.now())
         t_start = time.time()
 
-        frames = break_to_images(video_url)
-        t_split = time.time()
+        # Load model
+        i3d = InceptionI3d(2000, in_channels=3)
+        i3d.load_state_dict(torch.load("/usr/src/slt/slt/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt"))
+        i3d.cuda()
+        i3d = nn.DataParallel(i3d)
+        i3d.eval()
 
-        # Run inference
-        #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-        #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        #nmt_parser = argparse.ArgumentParser()
-        #nmt.add_arguments(nmt_parser)
-        #FLAGS, unparsed = nmt_parser.parse_known_args()
-        #default_hparams = nmt.create_hparams(FLAGS)
-        #train_fn = train.train
-        #inference_fn = inference.inference
-        #nmt.run_main(FLAGS, default_hparams, train_fn, inference_fn)
-        time.sleep(1)
+        # Data preparation
+        # Video to Frames 4D matrix (F x C x W x W)
+        vidcap = cv2.VideoCapture("/usr/src/slt" + video_url)
+        success, image = vidcap.read()
+        count = 0
+        processed_images = []
+        print('before', success)
+        while success:
+            count += 1
+            success, image = vidcap.read()
+            if image is None:
+                print('ok')
+                break
+            image_resized = cv2.resize(image, size)
+            processed_images.append(image_resized)
+        processed_images = np.transpose(processed_images, (0, 3, 1, 2))
+        processed_images = (processed_images / 255.0) * 2 - 1
+        print(processed_images.shape)
 
-        # Read result
-        with open('/usr/src/slt/slt/video/predictions.de') as f:
-            first_line = f.readline()
+        # Frames matrix (4D) to batch of window frames matrix with sliding window (5D)
+        frames = processed_images.shape[0]
+        batch_processed_images = []
+        for j in range(0, frames - window + 1, stride):
+            batch_processed_images.append(processed_images[j:j+window])
+        batch_processed_images = np.array(batch_processed_images)
+        batch_processed_images = np.transpose(batch_processed_images, (0, 2, 1, 3, 4))
+        print(batch_processed_images.shape)
+
+        # Extract features with pretrained i3d network
+        with torch.no_grad():
+            batch_processed_images = i3d.forward(torch.tensor(batch_processed_images, dtype=torch.float))
+            print(batch_processed_images.shape)
+            batch_processed_images = batch_processed_images.reshape((-1, 1024))
+        print(batch_processed_images.shape)
+
+        # Store data for inference
+        data = {"name": video_url,
+                "signer": "random",
+                "gloss": "random",
+                "text": "random",
+                "sign": batch_processed_images.cpu()}
+        with gzip.open("/usr/src/slt/slt/video/inference.i3d", 'wb') as handle:
+            pickle.dump([data], handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.remove("/usr/src/slt" + video_url)
+
+        # Track processing time
+        t_pre_processed = time.time()
+
+
+        # # Run inference
+        # #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        # #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        # #nmt_parser = argparse.ArgumentParser()
+        # #nmt.add_arguments(nmt_parser)
+        # #FLAGS, unparsed = nmt_parser.parse_known_args()
+        # #default_hparams = nmt.create_hparams(FLAGS)
+        # #train_fn = train.train
+        # #inference_fn = inference.inference
+        # #nmt.run_main(FLAGS, default_hparams, train_fn, inference_fn)
+        # time.sleep(1)
+        #
+        # # Read result
+        # with open('/usr/src/slt/slt/video/predictions.de') as f:
+        #     first_line = f.readline()
 
         t_inferred = time.time()
 
-        split_duration = round(t_split - t_start, 2)
-        inference_duration = round(t_inferred - t_split, 2)
+        pre_process_duration = round(t_pre_processed - t_start, 2)
+        inference_duration = round(t_inferred - t_pre_processed, 2)
 
 
         return JsonResponse({
             "video_stored_at": video_url,
             "request_details": {"received_at": received_at,
-                                "split_duration": split_duration,
+                                "split_duration": pre_process_duration,
                                 "inference_duration": inference_duration,
-                                "frames": frames,
-                                "other": request_details},
-            "sign_language_translation": first_line,
+                                "other": "request_details"},
+            "sign_language_translation": "first_line",
         })
+        # return JsonResponse({
+        #     "video_stored_at": video_url,
+        #     "request_details": {"received_at": received_at,
+        #                         "split_duration": split_duration,
+        #                         "inference_duration": inference_duration,
+        #                         "frames": frames,
+        #                         "other": request_details},
+        #     "sign_language_translation": first_line,
+        # })
     return JsonResponse({'API_type': 'GET'})
 
 
