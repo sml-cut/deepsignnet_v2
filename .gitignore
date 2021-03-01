@@ -1,3 +1,6 @@
 .idea/
 
 *.pyc
+
+slt/slt/models/s2t_lwta_1_1_8_2_meleti_ab_bpe_25000/best.ckpt
+slt/slt/models/s2t_lwta_1_1_8_2_meleti_ab_bpe_25000/1920.ckpt
